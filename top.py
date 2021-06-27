@@ -17,22 +17,19 @@
 # with more features, examples to run C/Rust code on the RISC-V CPU and documentation can be found
 # at: https://github.com/icebreaker-fpga/icebreaker-litex-examples
 
-import os
 import argparse
 
-from migen import *
-from migen.genlib.resetsync import AsyncResetSynchronizer
+from litex.soc.cores.clock import iCE40PLL
+from litex.soc.cores.led import LedChaser
+from litex.soc.cores.uart import UARTWishboneBridge
+
+from litex.soc.integration.builder import *
+from litex.soc.integration.soc_core import *
 
 from litex_boards.platforms import icebreaker
 
-from litex.soc.cores.ram import Up5kSPRAM
-from litex.soc.cores.spi_flash import SpiFlash
-from litex.soc.cores.clock import iCE40PLL
-from litex.soc.integration.soc_core import *
-from litex.soc.integration.soc import SoCRegion
-from litex.soc.integration.builder import *
-from litex.soc.cores.video import VideoDVIPHY
-from litex.soc.cores.led import LedChaser
+from migen import *
+from migen.genlib.resetsync import AsyncResetSynchronizer
 
 kB = 1024
 mB = 1024*kB
@@ -70,7 +67,8 @@ class _CRG(Module):
 
 class BaseSoC(SoCCore):
     mem_map = {**SoCCore.mem_map, **{"spiflash": 0x80000000}}
-    def __init__(self, bios_flash_offset, sys_clk_freq=int(24e6), with_video_terminal=False, **kwargs):
+
+    def __init__(self, bios_flash_offset, sys_clk_freq=int(24e6), **kwargs):
         platform = icebreaker.Platform()
         platform.add_extension(icebreaker.break_off_pmod)
 
@@ -78,37 +76,22 @@ class BaseSoC(SoCCore):
         kwargs["integrated_sram_size"] = 0
         kwargs["integrated_rom_size"]  = 0
 
-        # Set CPU variant / reset address
-        kwargs["cpu_reset_address"] = self.mem_map["spiflash"] + bios_flash_offset
+        # Select the crossover UART according to https://wishbone-utils.readthedocs.io/en/latest/wishbone-tool/
+        kwargs["uart_name"] = "crossover"
+        kwargs["with_timer"] = False;
 
         # SoCCore ----------------------------------------------------------------------------------
-        SoCCore.__init__(self, platform, sys_clk_freq,
-            ident          = "LiteX SoC on iCEBreaker",
+        SoCMini.__init__(self, platform, sys_clk_freq,
+            ident          = "PMod adjustable Counter",
             ident_version  = True,
             **kwargs)
 
         # CRG --------------------------------------------------------------------------------------
         self.submodules.crg = _CRG(platform, sys_clk_freq)
 
-        # 128KB SPRAM (used as SRAM) ---------------------------------------------------------------
-        self.submodules.spram = Up5kSPRAM(size=64*kB)
-        self.bus.add_slave("sram", self.spram.bus, SoCRegion(size=64*kB))
-
-        # SPI Flash --------------------------------------------------------------------------------
-        self.add_spi_flash(mode="1x", dummy_cycles=8)
-
-        # Add ROM linker region --------------------------------------------------------------------
-        self.bus.add_region("rom", SoCRegion(
-            origin = self.mem_map["spiflash"] + bios_flash_offset,
-            size   = 32*kB,
-            linker = True)
-        )
-
-        # Video ------------------------------------------------------------------------------------
-        if with_video_terminal:
-            platform.add_extension(icebreaker.dvi_pmod)
-            self.submodules.videophy = VideoDVIPHY(platform.request("dvi"), clock_domain="sys")
-            self.add_video_terminal(phy=self.videophy, timings="640x480@75Hz", clock_domain="sys")
+        # No CPU, use Serial to control Wishbone bus
+        self.submodules.serial_bridge = UARTWishboneBridge(platform.request("serial"), sys_clk_freq)
+        self.add_wb_master(self.serial_bridge.wishbone)
 
         # Leds -------------------------------------------------------------------------------------
         self.submodules.leds = LedChaser(
@@ -120,7 +103,6 @@ class BaseSoC(SoCCore):
 def flash(build_dir, build_name, bios_flash_offset):
     from litex.build.lattice.programmer import IceStormProgrammer
     prog = IceStormProgrammer()
-    prog.flash(bios_flash_offset, f"{build_dir}/software/bios/bios.bin")
     prog.flash(0x00000000,        f"{build_dir}/gateware/{build_name}.bin")
 
 # Build --------------------------------------------------------------------------------------------
@@ -128,27 +110,22 @@ def flash(build_dir, build_name, bios_flash_offset):
 def main():
     parser = argparse.ArgumentParser(description="LiteX SoC on iCEBreaker")
     parser.add_argument("--build",               action="store_true", help="Build bitstream")
-    parser.add_argument("--load",                action="store_true", help="Load bitstream")
     parser.add_argument("--flash",               action="store_true", help="Flash Bitstream")
-    parser.add_argument("--sys-clk-freq",        default=24e6,        help="System clock frequency (default: 24MHz)")
+    parser.add_argument("--sys-clk-freq",        default=21e6,        help="System clock frequency (default: 24MHz)")
     parser.add_argument("--bios-flash-offset",   default=0x40000,     help="BIOS offset in SPI Flash (default: 0x40000)")
-    parser.add_argument("--with-video-terminal", action="store_true", help="Enable Video Terminal (with DVI PMOD)")
     builder_args(parser)
     soc_core_args(parser)
     args = parser.parse_args()
 
+    print(args)
+
     soc = BaseSoC(
         bios_flash_offset   = args.bios_flash_offset,
         sys_clk_freq        = int(float(args.sys_clk_freq)),
-        with_video_terminal = args.with_video_terminal,
         **soc_core_argdict(args)
     )
     builder = Builder(soc, **builder_argdict(args))
     builder.build(run=args.build)
-
-    if args.load:
-        prog = soc.platform.create_programmer()
-        prog.load_bitstream(os.path.join(builder.gateware_dir, soc.build_name + ".bin"))
 
     if args.flash:
         flash(builder.output_dir, soc.build_name, args.bios_flash_offset)
