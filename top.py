@@ -31,6 +31,9 @@ from litex_boards.platforms import icebreaker
 from migen import *
 from migen.genlib.resetsync import AsyncResetSynchronizer
 
+import platformExtensions
+from DipSwitchPmod import DipSwitchPmod
+
 kB = 1024
 mB = 1024*kB
 
@@ -97,6 +100,14 @@ class BaseSoC(SoCCore):
         self.submodules.leds = LedChaser(
             pads         = platform.request_all("user_led"),
             sys_clk_freq = sys_clk_freq)
+
+
+        # DIP-Switches
+        platform.add_extension(platformExtensions.dip_pmod_1b)
+
+        self.submodules.dip = DipSwitchPmod(
+            pads = platform.request_all("dip_switch")
+        )
 
 # Flash --------------------------------------------------------------------------------------------
 
