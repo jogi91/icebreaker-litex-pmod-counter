@@ -33,6 +33,7 @@ from migen.genlib.resetsync import AsyncResetSynchronizer
 
 import platformExtensions
 from DipSwitchPmod import DipSwitchPmod
+from SevenSegmentPmod import SevenSegmentPmod
 
 kB = 1024
 mB = 1024*kB
@@ -107,6 +108,13 @@ class BaseSoC(SoCCore):
 
         self.submodules.dip = DipSwitchPmod(
             pads = platform.request_all("dip_switch")
+        )
+
+        # 7 Segment
+        platform.add_extension(platformExtensions.seven_segment_pmod_1a)
+        self.submodules.seven_segment = SevenSegmentPmod(
+            pads = platform.request_all("seven_segment"),
+            sys_clk_freq = sys_clk_freq
         )
 
 # Flash --------------------------------------------------------------------------------------------
