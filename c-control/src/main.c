@@ -1,13 +1,9 @@
 #include <generated/csr.h>
 #include <time.h>
 
-#define UART_EV_TX 0x1
-#define UART_EV_RX 0x2
-
 void isr(void) {
     asm("nop");
 }
-
 
 int main(void) {
     seven_segment_ctrl_write(0x1);
