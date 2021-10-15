@@ -21,6 +21,8 @@ import argparse
 
 from litex.soc.cores.clock import iCE40PLL
 from litex.soc.cores.led import LedChaser
+from litex.soc.cores.ram import Up5kSPRAM
+from litex.soc.cores.spi_flash import SpiFlash
 from litex.soc.cores.uart import UARTWishboneBridge
 
 from litex.soc.integration.builder import *
@@ -70,7 +72,14 @@ class _CRG(Module):
 # BaseSoC ------------------------------------------------------------------------------------------
 
 class BaseSoC(SoCCore):
-    mem_map = {**SoCCore.mem_map, **{"spiflash": 0x80000000}}
+    # mem_map = {**SoCCore.mem_map, **{"spiflash": 0x80000000}}
+    # Statically-define the memory map, to prevent it from shifting across various litex versions.
+    SoCCore.mem_map = {
+        "sram":             0x10000000,  # (default shadow @0xa0000000)
+        "spiflash":         0x20000000,  # (default shadow @0xa0000000)
+        "csr":              0xe0000000,  # (default shadow @0x60000000)
+        "vexriscv_debug":   0xf00f0000,
+    }
 
     def __init__(self, bios_flash_offset, sys_clk_freq=int(24e6), **kwargs):
         platform = icebreaker.Platform()
@@ -80,9 +89,16 @@ class BaseSoC(SoCCore):
         kwargs["integrated_sram_size"] = 0
         kwargs["integrated_rom_size"]  = 0
 
+        # Set CPU variant / reset address
+        if "cpu_variant" not in kwargs:
+            kwargs["cpu_variant"] = "lite+debug"
+
+        kwargs["cpu_reset_address"] = self.mem_map["spiflash"] + bios_flash_offset
+
         # Select the crossover UART according to https://wishbone-utils.readthedocs.io/en/latest/wishbone-tool/
         kwargs["uart_name"] = "crossover"
-        kwargs["with_timer"] = False;
+        # kwargs["with_timer"] = False;
+
 
         # SoCCore ----------------------------------------------------------------------------------
         SoCMini.__init__(self, platform, sys_clk_freq,
@@ -93,9 +109,26 @@ class BaseSoC(SoCCore):
         # CRG --------------------------------------------------------------------------------------
         self.submodules.crg = _CRG(platform, sys_clk_freq)
 
+        # UP5K has single port RAM, which is a dedicated 128 kilobyte block.
+        # Use this as CPU RAM.
+        spram_size = 128 * 1024
+        self.submodules.spram = Up5kSPRAM(size=spram_size)
+        self.register_mem("sram", self.mem_map["sram"], self.spram.bus, spram_size)
+
+        # The litex SPI module supports memory-mapped reads, as well as a bit-banged mode
+        # for doing writes.
+        spiflash_size = 16 * 1024 * 1024
+        self.submodules.spiflash = SpiFlash(platform.request("spiflash4x"), dummy=6, endianness="little")
+        self.register_mem("spiflash", self.mem_map["spiflash"], self.spiflash.bus, size=spiflash_size)
+        self.add_csr("spiflash")
+
+        # Add ROM linker region
+        self.add_memory_region("rom", self.mem_map["spiflash"] + bios_flash_offset, spiflash_size - bios_flash_offset, type="cached+linker")
+
         # No CPU, use Serial to control Wishbone bus
         self.submodules.serial_bridge = UARTWishboneBridge(platform.request("serial"), sys_clk_freq)
         self.add_wb_master(self.serial_bridge.wishbone)
+        # self.register_mem("vexriscv_debug", 0xf00f0000, self.cpu.debug_bus, 0x100)
 
         # Leds -------------------------------------------------------------------------------------
         self.submodules.leds = LedChaser(
@@ -129,6 +162,7 @@ def flash(build_dir, build_name, bios_flash_offset):
 def main():
     parser = argparse.ArgumentParser(description="LiteX SoC on iCEBreaker")
     parser.add_argument("--build",               action="store_true", help="Build bitstream")
+    parser.add_argument("--load", action="store_true", help="Load bitstream")
     parser.add_argument("--flash",               action="store_true", help="Flash Bitstream")
     parser.add_argument("--sys-clk-freq",        default=21e6,        help="System clock frequency (default: 24MHz)")
     parser.add_argument("--bios-flash-offset",   default=0x40000,     help="BIOS offset in SPI Flash (default: 0x40000)")
@@ -145,6 +179,10 @@ def main():
     )
     builder = Builder(soc, **builder_argdict(args))
     builder.build(run=args.build)
+
+    if args.load:
+        prog = soc.platform.create_programmer()
+        prog.load_bitstream(os.path.join(builder.gateware_dir, soc.build_name + ".bin"))
 
     if args.flash:
         flash(builder.output_dir, soc.build_name, args.bios_flash_offset)

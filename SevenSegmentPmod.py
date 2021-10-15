@@ -17,16 +17,16 @@ class SevenSegmentPmod(Module, AutoCSR):
         self._control = CSRStorage(
             size=1,
             reset=1,
-            name="CTRL",
+            name="ctrl",
             fields=[
-                CSRField(name="EN", size=1, offset=0, description="Global enable bit"),
+                CSRField(name="en", size=1, offset=0, description="Global enable bit"),
             ],
             description="Control Register for 7 Segment PMod Display",
         )
         self._values = CSRStorage(
             size=8,
             reset="0",
-            name="VALUE",
+            name="value",
             fields=[
                 CSRField(
                     name="digit0",

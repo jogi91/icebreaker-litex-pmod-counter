@@ -15,31 +15,31 @@ class DipSwitchPmod(Module, AutoCSR):
             size=len(pads),
             fields=[
                 CSRField(
-                    "S1", size=1, offset=0, description="Dip switch state 1"
+                    "s1", size=1, offset=0, description="Dip switch state 1"
                 ),
                 CSRField(
-                    "S2", size=1, offset=1, description="Dip switch state 2"
+                    "s2", size=1, offset=1, description="Dip switch state 2"
                 ),
                 CSRField(
-                    "S3", size=1, offset=2, description="Dip switch state 3"
+                    "s3", size=1, offset=2, description="Dip switch state 3"
                 ),
                 CSRField(
-                    "S4", size=1, offset=3, description="Dip switch state 4"
+                    "s4", size=1, offset=3, description="Dip switch state 4"
                 ),
                 CSRField(
-                    "S5", size=1, offset=4, description="Dip switch state 5"
+                    "s5", size=1, offset=4, description="Dip switch state 5"
                 ),
                 CSRField(
-                    "S6", size=1, offset=5, description="Dip switch state 6"
+                    "s6", size=1, offset=5, description="Dip switch state 6"
                 ),
                 CSRField(
-                    "S7", size=1, offset=6, description="Dip switch state 7"
+                    "s7", size=1, offset=6, description="Dip switch state 7"
                 ),
                 CSRField(
-                    "S8", size=1, offset=7, description="Dip switch state 8"
+                    "s8", size=1, offset=7, description="Dip switch state 8"
                 ),
             ],
-            name="STATE",
+            name="state",
             description="Contains the current value of the PMod DIP Switch bank.",
         )
         self.specials += MultiReg(pads, self._in.status)

@@ -130,3 +130,10 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+
+/c-control/tags
+/c-control/*.bin
+/c-control/*.elf
+/c-control/*.ihex
+/c-control/.obj/

@@ -1,0 +1,149 @@
+# Adapted Makefile from icebreaker-litex-examples/c-riscv-blink
+GIT_VERSION := $(shell git describe --tags --always)
+
+# Earlier versions of the Raspberry Pi image only had riscv32-gcc
+ifneq (,$(wildcard /usr/bin/riscv32-unknown-elf-gcc))
+CROSS_COMPILE       ?= riscv32-unknown-elf-
+else
+CROSS_COMPILE       ?= riscv64-unknown-elf-
+endif
+
+# The offset we should use when flashing the binary into the iCEBreaker flash.
+FLASH_OFFSET := 0x00040000
+
+CC         := $(CROSS_COMPILE)gcc
+CXX        := $(CROSS_COMPILE)g++
+OBJCOPY    := $(CROSS_COMPILE)objcopy
+
+RM         := rm -rf
+COPY       := cp -a
+PATH_SEP   := /
+
+ifeq ($(OS),Windows_NT)
+# When SHELL=sh.exe and this actually exists, make will silently
+# switch to using that instead of cmd.exe.  Unfortunately, there's
+# no way to tell which environment we're running under without either
+# (1) printing out an error message, or (2) finding something that
+# works everywhere.
+# As a result, we force the shell to be cmd.exe, so it works both
+# under cygwin and normal Windows.
+SHELL      = cmd.exe
+COPY       = copy
+RM         = del
+PATH_SEP   = \\
+endif
+
+
+BASE_DIR   := .
+SOC_BUILD_DIR := $(BASE_DIR)/../build/1bitsquared_icebreaker
+LITEX_SW_INC_DIR  := $(BASE_DIR)/../../litex-installation/litex/litex/soc/software/include
+VEXRISCV_INC_DIR := $(BASE_DIR)/../../litex-installation/litex/litex/soc/cores/cpu/vexriscv
+INCLUDES   := -I$(BASE_DIR)/include -I$(SOC_BUILD_DIR)/software/include -I$(LITEX_SW_INC_DIR) -I$(VEXRISCV_INC_DIR)
+LD_DIR     := $(BASE_DIR)/ld
+LD_SOC_BUILD_DIR := $(SOC_BUILD_DIR)/software/include/generated
+LDSCRIPT   := $(BASE_DIR)/ld/linker.ld
+ADD_CFLAGS := $(INCLUDES) -D__vexriscv__ -march=rv32i  -mabi=ilp32
+ADD_LFLAGS := 
+PACKAGE    := riscv-blink
+
+LDSCRIPTS  := $(LDSCRIPT) $(LD_SOC_BUILD_DIR)/output_format.ld $(LD_SOC_BUILD_DIR)/regions.ld
+SRC_DIR    := $(BASE_DIR)/src
+THIRD_PARTY := $(BASE_DIR)/third_party
+DBG_CFLAGS := -ggdb -g -DDEBUG -Wall
+DBG_LFLAGS := -ggdb -g -Wall
+CFLAGS     := $(ADD_CFLAGS) \
+			  -Wall -Wextra \
+			  -ffunction-sections -fdata-sections -fno-common \
+			  -fomit-frame-pointer \
+			  -march=rv32i \
+			  -DGIT_VERSION=u\"$(GIT_VERSION)\" -std=gnu11
+# Uncomment the following line to enable size optimization.
+# Keep in mind that enabling optimization will make GDB debugging harder if not impossible.
+# CFLAGS     := $(CFLAGS) -Os
+CXXFLAGS   := $(CFLAGS) -std=c++11 -fno-rtti -fno-exceptions
+LFLAGS     := $(CFLAGS) $(ADD_LFLAGS) -L$(LD_DIR) -L$(LD_SOC_BUILD_DIR) \
+			  -nostartfiles \
+			  -Wl,--gc-sections \
+			  -Wl,--no-warn-mismatch \
+			  -Wl,--script=$(LDSCRIPT) \
+			  -Wl,--build-id=none
+
+OBJ_DIR    := .obj
+
+CSOURCES   := $(wildcard $(SRC_DIR)/*.c) $(wildcard $(THIRD_PARTY)/libbase/*.c) $(wildcard $(THIRD_PARTY)/*.c)
+CPPSOURCES := $(wildcard $(SRC_DIR)/*.cpp) $(wildcard $(THIRD_PARTY)/libbase/*.cpp) $(wildcard $(THIRD_PARTY)/*.cpp)
+ASOURCES   := $(wildcard $(SRC_DIR)/*.S) $(wildcard $(THIRD_PARTY)/libbase/*.S) $(wildcard $(THIRD_PARTY)/*.S)
+COBJS      := $(addprefix $(OBJ_DIR)/, $(notdir $(CSOURCES:.c=.o)))
+CXXOBJS    := $(addprefix $(OBJ_DIR)/, $(notdir $(CPPSOURCES:.cpp=.o)))
+AOBJS      := $(addprefix $(OBJ_DIR)/, $(notdir $(ASOURCES:.S=.o)))
+OBJECTS    := $(COBJS) $(CXXOBJS) $(AOBJS)
+VPATH      := $(SRC_DIR) $(THIRD_PARTY) $(THIRD_PARTY)/libbase
+
+QUIET      := @
+
+ALL        := all
+TARGET     := $(PACKAGE).elf
+CLEAN      := clean
+
+$(ALL): $(TARGET) $(PACKAGE).bin $(PACKAGE).ihex
+
+# $(PACKAGE).dfu
+
+$(OBJECTS): | $(OBJ_DIR)
+
+$(TARGET): $(OBJECTS) $(LDSCRIPTS)
+	$(QUIET) echo "  LD       $@"
+	$(QUIET) $(CC) $(OBJECTS) $(LFLAGS) -o $@
+
+$(PACKAGE).bin: $(TARGET)
+	$(QUIET) echo "  OBJCOPY  $@"
+	$(QUIET) $(OBJCOPY) -O binary $(TARGET) $@
+
+$(PACKAGE).dfu: $(PACKAGE).bin
+	$(QUIET) echo "  DFU      $@"
+	$(QUIET) $(COPY) $(PACKAGE).bin $@
+	$(QUIET) dfu-suffix -v 1209 -p 70b1 -a $@
+
+$(PACKAGE).ihex: $(TARGET)
+	$(QUIET) echo "  IHEX     $(PACKAGE).ihex"
+	$(QUIET) $(OBJCOPY) -O ihex $(TARGET) $@
+
+$(DEBUG): CFLAGS += $(DBG_CFLAGS)
+$(DEBUG): LFLAGS += $(DBG_LFLAGS)
+CFLAGS += $(DBG_CFLAGS)
+LFLAGS += $(DBG_LFLAGS)
+$(DEBUG): $(TARGET)
+
+$(OBJ_DIR):
+	$(QUIET) mkdir $(OBJ_DIR)
+
+$(COBJS) : $(OBJ_DIR)/%.o : %.c $(BASE_DIR)/Makefile
+	$(QUIET) echo "  CC       $<	$(notdir $@)"
+	$(QUIET) $(CC) -c $< $(CFLAGS) -o $@ -MMD
+
+$(OBJ_DIR)/%.o: %.cpp
+	$(QUIET) echo "  CXX      $<	$(notdir $@)"
+	$(QUIET) $(CXX) -c $< $(CXXFLAGS) -o $@ -MMD
+
+$(OBJ_DIR)/%.o: %.S
+	$(QUIET) echo "  AS       $<	$(notdir $@)"
+	$(QUIET) $(CC) -x assembler-with-cpp -c $< $(CFLAGS) -o $@ -MMD
+
+prog: $(PACKAGE).bin
+	iceprog -o $(FLASH_OFFSET) $<
+
+sudo-prog: $(PACKAGE).bin
+	@echo 'Executing prog as root!!!'
+	sudo iceprog -o $(FLASH_OFFSET) $<
+
+clean:
+	$(QUIET) echo "  RM      $(subst /,$(PATH_SEP),$(wildcard $(OBJ_DIR)/*.d))"
+	-$(QUIET) $(RM) $(subst /,$(PATH_SEP),$(wildcard $(OBJ_DIR)/*.d))
+	$(QUIET) echo "  RM      $(subst /,$(PATH_SEP),$(wildcard $(OBJ_DIR)/*.d))"
+	-$(QUIET) $(RM) $(subst /,$(PATH_SEP),$(wildcard $(OBJ_DIR)/*.o))
+	$(QUIET) echo "  RM      $(TARGET) $(PACKAGE).bin $(PACKAGE).symbol $(PACKAGE).ihex $(PACKAGE).dfu"
+	-$(QUIET) $(RM) $(TARGET) $(PACKAGE).bin $(PACKAGE).symbol $(PACKAGE).ihex $(PACKAGE).dfu
+
+include $(wildcard $(OBJ_DIR)/*.d)
+
+.PHONY: clean prog sudo-prog
