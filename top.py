@@ -81,23 +81,25 @@ class BaseSoC(SoCCore):
         "vexriscv_debug":   0xf00f0000,
     }
 
-    def __init__(self, bios_flash_offset, sys_clk_freq=int(24e6), **kwargs):
+    def __init__(self, bios_flash_offset, sys_clk_freq=int(24e6), blink_leds=False, enable_dip=False, enable_7seg=False, enable_control=False, **kwargs):
         platform = icebreaker.Platform()
-        platform.add_extension(icebreaker.break_off_pmod)
 
         # Disable Integrated ROM/SRAM since too large for iCE40 and UP5K has specific SPRAM.
         kwargs["integrated_sram_size"] = 0
         kwargs["integrated_rom_size"]  = 0
 
-        # Set CPU variant / reset address
-        if "cpu_variant" not in kwargs:
-            kwargs["cpu_variant"] = "lite+debug"
+        if enable_control:
+            kwargs["cpu_type"] = "vexriscv"
+            # Set CPU variant / reset address
+            if "cpu_variant" not in kwargs:
+                kwargs["cpu_variant"] = "lite+debug"
 
-        kwargs["cpu_reset_address"] = self.mem_map["spiflash"] + bios_flash_offset
+            kwargs["cpu_reset_address"] = self.mem_map["spiflash"] + bios_flash_offset
+        else:
+            kwargs["with_timer"] = False;
 
         # Select the crossover UART according to https://wishbone-utils.readthedocs.io/en/latest/wishbone-tool/
         kwargs["uart_name"] = "crossover"
-        # kwargs["with_timer"] = False;
 
 
         # SoCCore ----------------------------------------------------------------------------------
@@ -109,46 +111,49 @@ class BaseSoC(SoCCore):
         # CRG --------------------------------------------------------------------------------------
         self.submodules.crg = _CRG(platform, sys_clk_freq)
 
-        # UP5K has single port RAM, which is a dedicated 128 kilobyte block.
-        # Use this as CPU RAM.
-        spram_size = 128 * 1024
-        self.submodules.spram = Up5kSPRAM(size=spram_size)
-        self.register_mem("sram", self.mem_map["sram"], self.spram.bus, spram_size)
+        if enable_control: # Add supporting hardware for the cpu
+            # UP5K has single port RAM, which is a dedicated 128 kilobyte block.
+            # Use this as CPU RAM.
+            spram_size = 128 * 1024
+            self.submodules.spram = Up5kSPRAM(size=spram_size)
+            self.register_mem("sram", self.mem_map["sram"], self.spram.bus, spram_size)
 
-        # The litex SPI module supports memory-mapped reads, as well as a bit-banged mode
-        # for doing writes.
-        spiflash_size = 16 * 1024 * 1024
-        self.submodules.spiflash = SpiFlash(platform.request("spiflash4x"), dummy=6, endianness="little")
-        self.register_mem("spiflash", self.mem_map["spiflash"], self.spiflash.bus, size=spiflash_size)
-        self.add_csr("spiflash")
+            # The litex SPI module supports memory-mapped reads, as well as a bit-banged mode
+            # for doing writes.
+            spiflash_size = 16 * 1024 * 1024
+            self.submodules.spiflash = SpiFlash(platform.request("spiflash4x"), dummy=6, endianness="little")
+            self.register_mem("spiflash", self.mem_map["spiflash"], self.spiflash.bus, size=spiflash_size)
+            self.add_csr("spiflash")
 
-        # Add ROM linker region
-        self.add_memory_region("rom", self.mem_map["spiflash"] + bios_flash_offset, spiflash_size - bios_flash_offset, type="cached+linker")
+            # Add ROM linker region
+            self.add_memory_region("rom", self.mem_map["spiflash"] + bios_flash_offset,
+                                   spiflash_size - bios_flash_offset, type="cached+linker")
 
         # No CPU, use Serial to control Wishbone bus
         self.submodules.serial_bridge = UARTWishboneBridge(platform.request("serial"), sys_clk_freq)
         self.add_wb_master(self.serial_bridge.wishbone)
-        # self.register_mem("vexriscv_debug", 0xf00f0000, self.cpu.debug_bus, 0x100)
 
-        # Leds -------------------------------------------------------------------------------------
-        self.submodules.leds = LedChaser(
-            pads         = platform.request_all("user_led"),
-            sys_clk_freq = sys_clk_freq)
+        if blink_leds:
+            # Leds -------------------------------------------------------------------------------------
+            platform.add_extension(icebreaker.break_off_pmod)
+            self.submodules.leds = LedChaser(
+                pads         = platform.request_all("user_led"),
+                sys_clk_freq = sys_clk_freq)
 
+        if enable_dip:
+            # DIP-Switches
+            platform.add_extension(platformExtensions.dip_pmod_1b)
+            self.submodules.dip = DipSwitchPmod(
+                pads = platform.request_all("dip_switch")
+            )
 
-        # DIP-Switches
-        platform.add_extension(platformExtensions.dip_pmod_1b)
-
-        self.submodules.dip = DipSwitchPmod(
-            pads = platform.request_all("dip_switch")
-        )
-
-        # 7 Segment
-        platform.add_extension(platformExtensions.seven_segment_pmod_1a)
-        self.submodules.seven_segment = SevenSegmentPmod(
-            pads = platform.request_all("seven_segment"),
-            sys_clk_freq = sys_clk_freq
-        )
+        if enable_7seg:
+            # 7 Segment
+            platform.add_extension(platformExtensions.seven_segment_pmod_1a)
+            self.submodules.seven_segment = SevenSegmentPmod(
+                pads = platform.request_all("seven_segment"),
+                sys_clk_freq = sys_clk_freq
+            )
 
 # Flash --------------------------------------------------------------------------------------------
 
@@ -161,22 +166,26 @@ def flash(build_dir, build_name, bios_flash_offset):
 
 def main():
     parser = argparse.ArgumentParser(description="LiteX SoC on iCEBreaker")
-    parser.add_argument("--build",               action="store_true", help="Build bitstream")
-    parser.add_argument("--load", action="store_true", help="Load bitstream")
-    parser.add_argument("--flash",               action="store_true", help="Flash Bitstream")
+    parser.add_argument("--build",               action="store_true", default=True, help="Build bitstream")
+    parser.add_argument("--load", action="store_true", default=False, help="Load bitstream")
+    parser.add_argument("--flash",               action="store_true", default=True, help="Flash Bitstream")
     parser.add_argument("--sys-clk-freq",        default=21e6,        help="System clock frequency (default: 24MHz)")
     parser.add_argument("--bios-flash-offset",   default=0x40000,     help="BIOS offset in SPI Flash (default: 0x40000)")
+    parser.add_argument("--blinky", action="store_true", help="Enable blinky LED block")
+    parser.add_argument("--dip", action="store_true", help="Enable dip switch block")
+    parser.add_argument("--sevenseg", action="store_true", help="Enable 7 segment LED block")
+    parser.add_argument("--control", action="store_true", help="Enable control block (will enable --dip and --7seg, and instantiates a cpu)")
     builder_args(parser)
     soc_core_args(parser)
     args = parser.parse_args()
 
+    # Override some default arguments
+    args.doc = True
+    args.csr_csv = "build/csr.csv"
     print(args)
 
-    soc = BaseSoC(
-        bios_flash_offset   = args.bios_flash_offset,
-        sys_clk_freq        = int(float(args.sys_clk_freq)),
-        **soc_core_argdict(args)
-    )
+
+    soc = BaseSoC(bios_flash_offset=args.bios_flash_offset, sys_clk_freq=int(float(args.sys_clk_freq)), blink_leds=args.blinky, enable_dip=args.dip, enable_7seg=args.sevenseg, enable_control=args.control, **soc_core_argdict(args))
     builder = Builder(soc, **builder_argdict(args))
     builder.build(run=args.build)
 
